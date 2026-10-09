@@ -1,0 +1,47 @@
+name: Runner
+
+# Sirf schedule aur manual button se chalta hai (public repo me bahar se koi trigger nahi kar sakta)
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "selftest / run / test_trade"
+        default: "selftest"
+      confirm:
+        description: "test_trade ke liye YES likho"
+        default: "NO"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: runner
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: pip install -r requirements.txt
+
+      - name: Bot
+        env:
+          COINDCX_API_KEY: ${{ secrets.COINDCX_API_KEY }}
+          COINDCX_API_SECRET: ${{ secrets.COINDCX_API_SECRET }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          MODE: ${{ github.event.inputs.mode || 'run' }}
+          CONFIRM_TEST: ${{ github.event.inputs.confirm || 'NO' }}
+          DRY_RUN: ${{ vars.DRY_RUN || 'true' }}
+          QTY_ETH: ${{ vars.QTY_ETH || '0.001' }}
+          LEVERAGE: ${{ vars.LEVERAGE || '5' }}
+        run: python bot.py
