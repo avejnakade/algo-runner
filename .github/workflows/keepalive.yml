@@ -1,0 +1,26 @@
+name: Keepalive
+
+# Public repo me 60 din tak koi activity na ho to scheduled workflows band ho jaate hain.
+# Ye mahine me 2 baar ek chhota commit karke activity banata hai (best-effort).
+on:
+  schedule:
+    - cron: "0 3 1,15 * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+      - name: heartbeat commit
+        run: |
+          date -u > heartbeat.txt
+          git config user.name "keepalive"
+          git config user.email "keepalive@users.noreply.github.com"
+          git add heartbeat.txt
+          git commit -m "heartbeat" || true
+          git push
