@@ -81,13 +81,36 @@ def emergency_exit(pos_id: str, reason: str):
                       f"CoinDCX app se TURANT manually band karo ya SL lagao!")
 
 
+def liq_price_of(pos: dict, entry: float, long_: bool):
+    """Position se Est. Liquidation Price. Na mile/galat ho to conservative estimate (leverage se)."""
+    try:
+        liq = float(pos.get("liquidation_price") or 0)
+    except Exception:
+        liq = 0.0
+    if liq > 0 and ((long_ and liq < entry) or ((not long_) and liq > entry)):
+        return liq, False
+    dist = entry * 0.85 / config.LEVERAGE
+    return (entry - dist if long_ else entry + dist), True
+
+
 def open_trade(sig: dict, inst: dict):
     tick = float(inst.get("price_increment") or 0.01)
+    long_ = sig["side"] == "buy"
     qty, min_q = qty_for(inst)
     if float(qty) <= 0 or float(qty) < min_q:
         notifier.send(f"Signal aaya par minimum lot {min_q} ETH (step {inst.get('quantity_increment')}) hai, "
-                      f"aapka QTY_ETH {config.QTY_ETH} usse chhota hai. Trade nahi liya. "
-                      f"(QTY_ETH badhane se pehle capital/risk dekh lo)")
+                      f"aapka QTY_ETH {config.QTY_ETH} usse chhota hai. Trade nahi liya.")
+        return
+    max_lev = float((inst.get("max_leverage_long") if long_ else inst.get("max_leverage_short")) or 0)
+    if max_lev and config.LEVERAGE > max_lev:
+        notifier.send(f"Signal aaya par is side ke liye max leverage {max_lev}x hai, aapka LEVERAGE {config.LEVERAGE}x. "
+                      f"Trade nahi liya. (Repo Variables me LEVERAGE badlo)")
+        return
+
+    sl_pct = abs(sig["ref_price"] - sig["sl"]) / sig["ref_price"] * 100
+    if config.MIN_SL_PCT > 0 and sl_pct < config.MIN_SL_PCT:
+        notifier.send(f"Signal skip: SL entry se sirf {sl_pct:.2f}% door hai (MIN_SL_PCT {config.MIN_SL_PCT}%). "
+                      f"Itne paas SL fees me hi kat jaata hai.")
         return
 
     ref = cx.fmt(cx.round_to_step(sig["ref_price"], tick))
@@ -99,15 +122,26 @@ def open_trade(sig: dict, inst: dict):
         return
 
     entry = float(pos.get("avg_price") or sig["ref_price"])
+    liq, liq_estimated = liq_price_of(pos, entry, long_)
+
+    # SL: strategy ka, par Est. Liquidation Price ke andar (80% raaste tak) hi
     sl = float(cx.round_to_step(sig["sl"], tick))
+    limit = entry - config.LIQ_SL_FRACTION * (entry - liq) if long_ else entry + config.LIQ_SL_FRACTION * (liq - entry)
+    adjusted = (long_ and sl < limit) or ((not long_) and sl > limit)
+    if adjusted:
+        sl = float(cx.ceil_to_step(limit, tick)) if long_ else float(cx.floor_to_step(limit, tick))
+
     risk = abs(entry - sl)
-    long_ = sig["side"] == "buy"
     if risk <= 0 or (long_ and sl >= entry) or ((not long_) and sl <= entry):
         emergency_exit(pos["id"], "Fill price SL ke galat side par aa gaya")
         return
-    tp = entry + config.RISK_REWARD * risk if long_ else entry - config.RISK_REWARD * risk
-    tp_s = cx.fmt(cx.round_to_step(tp, tick))
+    # Target distance = max(3 x ASLI final SL distance, minimum target points)
+    tp_dist = max(config.RISK_REWARD * risk, config.MIN_TARGET_POINTS)
+    tp = entry + tp_dist if long_ else entry - tp_dist
+    # Target door ki taraf round (taaki "kam se kam 15 point" hamesha pura rahe)
+    tp_s = cx.fmt(cx.ceil_to_step(tp, tick)) if long_ else cx.fmt(cx.floor_to_step(tp, tick))
     sl_s = cx.fmt(cx.round_to_step(sl, tick))
+    tp_dist = abs(float(tp_s) - entry)
 
     try:
         cx.create_tpsl(pos["id"], tp_s, sl_s)
@@ -115,8 +149,21 @@ def open_trade(sig: dict, inst: dict):
         emergency_exit(pos["id"], f"SL/Target set nahi ho paya: {str(e)[:120]}")
         return
 
-    notifier.send(f"Trade liya: {sig['side'].upper()} {config.PAIR} qty {cx.fmt(qty)}\n"
-                  f"Entry ~{entry}\nSL {sl_s}\nTarget {tp_s} (1:{config.RISK_REWARD})")
+    note = ""
+    if adjusted:
+        note += f"\nSL liquidation ke bahar jaa raha tha, isliye strategy SL {sig['sl']} ki jagah {sl_s} lagaya."
+    if liq_estimated:
+        note += "\n(Liquidation price API se nahi mila, estimate use kiya.)"
+    loss_est = risk * float(qty)
+    try:
+        fee_pct = 2 * float(inst.get("taker_fee")) * 1.18      # entry+exit market, 18% GST
+        fee_note = f" | round-trip fees ~{fee_pct:.2f}% of notional"
+    except Exception:
+        fee_note = ""
+    note += f"\nSL distance {risk / entry * 100:.2f}% ({config.SL_MODE.upper()} SL){fee_note}"
+    notifier.send(f"Trade liya: {sig['side'].upper()} {config.PAIR} qty {cx.fmt(qty)} @ {config.LEVERAGE}x\n"
+                  f"Entry ~{entry}\nSL {sl_s} ({risk:.1f} pt)\nTarget {tp_s} ({tp_dist:.1f} pt, RR 1:{tp_dist / risk:.1f})\n"
+                  f"Est. Liq ~{round(liq, 2)} | SL hit pe loss ~{round(loss_est, 3)} USDT{note}")
 
 
 def run_normal():
@@ -187,6 +234,11 @@ def selftest():
     qty, min_q = qty_for(inst)
     lines.append(f"QTY_ETH={config.QTY_ETH} -> use hoga {cx.fmt(qty)} | min lot OK: {float(qty) > 0 and float(qty) >= min_q}")
 
+    c5p = cx.get_candles_5m(config.PAIR, 20)
+    px = c5p[-1]["close"] if c5p else 0
+    max_lev = inst.get("max_leverage_long")
+    lines.append(f"Leverage {config.LEVERAGE}x (max {max_lev}) -> OK: {not max_lev or config.LEVERAGE <= float(max_lev)} | "
+                 f"approx margin {round(float(qty) * px / config.LEVERAGE, 3)} USDT @ price {px}")
     pos = cx.get_position(config.PAIR)          # signed call = API key auth check
     lines.append(f"API key auth: OK | khuli position: {cx.is_open(pos)}")
 
@@ -256,10 +308,10 @@ def main():
         else:
             run_normal()
     except ApiError as e:
-        print("api error")
+        print("api error:", str(e)[:150])
         notifier.send(f"ALERT API error: {str(e)[:300]}")
     except Exception as e:
-        print("bot error")
+        print("bot error:", type(e).__name__)
         notifier.send(f"ALERT bot error: {type(e).__name__}: {str(e)[:200]}")
 
 
