@@ -2,10 +2,14 @@
 CoinDCX Futures API se baat karne wala hissa.
 Official doc: CoinDCX Futures API (HMAC-SHA256, POST body JSON).
 Koi secret kabhi print/log nahi hota.
+
+Margin currency: INR (INR-M wallet) ya USDT. Default INR.
+Badalna ho to repo Variable MARGIN_CCY = USDT (ya config.py me MARGIN_CCY) set karo.
 """
 import hashlib
 import hmac
 import json
+import os
 import time
 from decimal import Decimal, ROUND_HALF_UP, ROUND_CEILING, ROUND_FLOOR
 
@@ -17,6 +21,9 @@ BASE = "https://api.coindcx.com"
 PUBLIC = "https://public.coindcx.com"
 TIMEOUT = (5, 20)
 FUT = "/exchange/v1/derivatives/futures"
+
+# Margin currency: config.MARGIN_CCY ho to wo, nahi to env var MARGIN_CCY, nahi to INR
+MARGIN_CCY = (getattr(config, "MARGIN_CCY", None) or os.getenv("MARGIN_CCY") or "INR").strip().upper()
 
 
 class ApiError(Exception):
@@ -141,7 +148,8 @@ def aggregate_15m(c5: list, now_ms: int) -> list:
 
 # ---------- Private (signed) ----------
 def list_positions() -> list:
-    st, data = _post(f"{FUT}/positions", {"page": "1", "size": "50"})
+    st, data = _post(f"{FUT}/positions",
+                     {"page": "1", "size": "50", "margin_currency_short_name": [MARGIN_CCY]})
     if not isinstance(data, list):
         raise ApiError(f"positions fetch fail (http {st}): {str(data)[:150]}")
     return data
@@ -165,7 +173,8 @@ def is_open(pos) -> bool:
 def list_orders(status: str = "filled", size: int = 50) -> list:
     seen, out = set(), []
     for side in ("buy", "sell"):
-        st, data = _post(f"{FUT}/orders", {"status": status, "side": side, "page": "1", "size": str(size)})
+        st, data = _post(f"{FUT}/orders", {"status": status, "side": side, "page": "1", "size": str(size),
+                                           "margin_currency_short_name": [MARGIN_CCY]})
         if not isinstance(data, list):
             raise ApiError(f"orders fetch fail (http {st}): {str(data)[:150]}")
         for o in data:
@@ -180,7 +189,8 @@ def place_market_order(pair: str, side: str, qty: str, leverage: int, ref_price:
         "side": side, "pair": pair, "order_type": "market_order",
         "price": ref_price, "total_quantity": float(qty), "leverage": leverage,
         "notification": "no_notification", "time_in_force": "good_till_cancel",
-        "hidden": False, "post_only": False}}
+        "hidden": False, "post_only": False,
+        "margin_currency_short_name": MARGIN_CCY}}
     st, data = _post(f"{FUT}/orders/create", body)
     if isinstance(data, list) and data and data[0].get("id"):
         return data[0]
