@@ -42,6 +42,10 @@ jobs:
           MODE: ${{ github.event.inputs.mode || 'run' }}
           CONFIRM_TEST: ${{ github.event.inputs.confirm || 'NO' }}
           DRY_RUN: ${{ vars.DRY_RUN || 'true' }}
-          QTY_ETH: ${{ vars.QTY_ETH || '0.001' }}
-          LEVERAGE: ${{ vars.LEVERAGE || '5' }}
+          QTY_ETH: ${{ vars.QTY_ETH || '0.01' }}
+          LEVERAGE: ${{ vars.LEVERAGE || '50' }}
+          SL_MODE: ${{ vars.SL_MODE || 'ema' }}
+          SL_EMA_BUFFER: ${{ vars.SL_EMA_BUFFER || '3' }}
+          MIN_SL_PCT: ${{ vars.MIN_SL_PCT || '0' }}
+          MIN_TARGET_POINTS: ${{ vars.MIN_TARGET_POINTS || '15' }}
         run: python bot.py
