@@ -276,8 +276,10 @@ def test_trade():
         notifier.send("TEST: order gaya par position nahi dikhi. App me check karo.")
         return
     entry = float(pos.get("avg_price") or ref)
-    sl_s = cx.fmt(cx.round_to_step(entry * 0.95, tick))
-    tp_s = cx.fmt(cx.round_to_step(entry * 1.05, tick))
+    # Test ke SL/TP liquidation ke andar rakhne ke liye leverage ke hisaab se (1/leverage ka 40%)
+    pct = 0.4 / config.LEVERAGE
+    sl_s = cx.fmt(cx.round_to_step(entry * (1 - pct), tick))
+    tp_s = cx.fmt(cx.round_to_step(entry * (1 + pct), tick))
     try:
         cx.create_tpsl(pos["id"], tp_s, sl_s)
     except ApiError as e:
